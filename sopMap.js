@@ -1,5 +1,4 @@
-const difflib = require('difflib');
-const normalize = (text) => text.toLowerCase().replace(/[^a-z0-9\s]/g, '');
+const stringSimilarity = require('string-similarity');
 
 const sopDefinitions = {
     "Next-Day Schedule SOP": ["next-day", "schedule", "submission", "daily schedule"],
@@ -45,17 +44,15 @@ const sopDefinitions = {
 };
 
 function matchSOP(query) {
-    const normalizedQuery = normalize(query);
+    const normalizedQuery = query.toLowerCase();
     let bestMatch = null;
     let highestScore = 0;
 
     for (const [sop, keywords] of Object.entries(sopDefinitions)) {
-        for (const keyword of keywords) {
-            const score = difflib.SequenceMatcher(null, normalizedQuery, normalize(keyword)).ratio();
-            if (score > highestScore) {
-                highestScore = score;
-                bestMatch = sop;
-            }
+        const match = stringSimilarity.findBestMatch(normalizedQuery, keywords);
+        if (match.bestMatch.rating > highestScore) {
+            highestScore = match.bestMatch.rating;
+            bestMatch = sop;
         }
     }
 
