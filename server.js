@@ -1,137 +1,124 @@
 const express = require('express');
-const axios = require('axios');
-const { google } = require('googleapis');
-const stringSimilarity = require('string-similarity');
 const bodyParser = require('body-parser');
-require('dotenv').config();
+const { google } = require('googleapis');
+const { WebClient } = require('@slack/web-api');
+const fuzz = require('fuzzball'); // For fuzzy matching
 
 const app = express();
-app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 
-const auth = new google.auth.GoogleAuth({
-  credentials: {
-    client_email: process.env.GOOGLE_CLIENT_EMAIL,
-    private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-  },
-  scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-});
+const slackToken = process.env.SLACK_BOT_TOKEN;
+const slackClient = new WebClient(slackToken);
 
-const spreadsheetId = process.env.GOOGLE_SHEET_ID;
+const sheets = google.sheets({ version: 'v4', auth: process.env.GOOGLE_API_KEY });
+const spreadsheetId = 'YOUR_SPREADSHEET_ID'; // Replace with your actual ID
 
-async function fetchSheet(sheetName, range) {
-  const client = await auth.getClient();
-  const sheets = google.sheets({ version: 'v4', auth: client });
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `${sheetName}!${range}`,
+// Define query types and keywords
+const queryMap = {
+  'jobs_today': ['jobs due today', 'today\'s jobs', 'due today'],
+  'jobs_tomorrow': ['jobs due tomorrow', 'tomorrow\'s jobs', 'due tomorrow'],
+  'assignments_by_job': ['assignments for', 'who is assigned to', 'job assignments'],
+  'assignments_by_week': ['assignments this week', 'weekly assignments'],
+  'purchase_orders': ['approved purchase orders', 'POs approved', 'purchase orders this week']
+};
+
+// Match query to type
+function matchQuery(text) {
+  let bestMatch = { type: null, score: 0 };
+  for (const [type, phrases] of Object.entries(queryMap)) {
+    for (const phrase of phrases) {
+      const score = fuzz.token_set_ratio(text.toLowerCase(), phrase.toLowerCase());
+      if (score > bestMatch.score && score > 70) {
+        bestMatch = { type, score };
+      }
+    }
+  }
+  return bestMatch.type;
+}
+
+// Fetch data from Google Sheets
+async function fetchSheetData(type) {
+  switch (type) {
+    case 'jobs_today':
+      return await getJobsByDate('today');
+    case 'jobs_tomorrow':
+      return await getJobsByDate('tomorrow');
+    case 'assignments_by_job':
+      return await getAssignments('job');
+    case 'assignments_by_week':
+      return await getAssignments('week');
+    case 'purchase_orders':
+      return await getPurchaseOrders();
+    default:
+      return 'Sorry, I couldn’t find anything relevant.';
+  }
+}
+
+// Example: Get jobs by date
+async function getJobsByDate(day) {
+  const range = 'Jobs List!A2:G'; // Adjust range as needed
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+  const rows = res.data.values;
+  const today = new Date();
+  const targetDate = new Date(today);
+  if (day === 'tomorrow') targetDate.setDate(today.getDate() + 1);
+
+  const filtered = rows.filter(row => {
+    const jobDate = new Date(row[5]); // Assuming column F is the date
+    return jobDate.toDateString() === targetDate.toDateString();
   });
-  return res.data.values;
+
+  if (filtered.length === 0) return 'No jobs found for ' + day;
+  return filtered.map(row => `• ${row[0]} - ${row[1]} (${row[5]})`).join('\n');
 }
 
-function formatBlocks(title, items) {
-  const blocks = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: title },
-    },
-  ];
-  for (const item of items) {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: item },
-    });
-    blocks.push({ type: 'divider' });
+// Example: Get assignments
+async function getAssignments(scope) {
+  const range = 'Trades!A2:E'; // Adjust range
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+  const rows = res.data.values;
+
+  if (scope === 'job') {
+    return rows.map(row => `• ${row[0]}: ${row[1]} assigned to ${row[2]}`).join('\n');
+  } else {
+    return rows.map(row => `• ${row[0]}: ${row[1]} this week`).join('\n');
   }
-  return blocks;
 }
 
-async function handleQuery(query) {
-  const lowerQuery = query.toLowerCase();
+// Example: Get purchase orders
+async function getPurchaseOrders() {
+  const range = 'Purchase Orders!A2:E';
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+  const rows = res.data.values;
 
-  if (lowerQuery.includes('sop') || lowerQuery.includes('procedure')) {
-    const rows = await fetchSheet('AI CHATBOT', 'A2:C');
-    const sopMap = {};
-    for (const [title, summary, keywords] of rows) {
-      sopMap[title] = {
-        summary,
-        keywords: keywords.split(',').map(k => k.trim().toLowerCase()),
-      };
-    }
+  const thisWeek = new Date();
+  const startOfWeek = new Date(thisWeek.setDate(thisWeek.getDate() - thisWeek.getDay()));
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 6);
 
-    const allKeywords = Object.entries(sopMap).flatMap(([title, data]) =>
-      data.keywords.map(keyword => ({ title, keyword }))
-    );
+  const filtered = rows.filter(row => {
+    const date = new Date(row[3]); // Assuming column D is approval date
+    return date >= startOfWeek && date <= endOfWeek;
+  });
 
-    const keywordList = allKeywords.map(k => k.keyword);
-    const match = stringSimilarity.findBestMatch(query.toLowerCase(), keywordList).bestMatch;
-    const matchedTitle = allKeywords.find(k => k.keyword === match.target)?.title;
-
-    if (matchedTitle) {
-      return formatBlocks('SOP Match', [
-        `*${matchedTitle}*\n${sopMap[matchedTitle].summary}`,
-      ]);
-    } else {
-      return formatBlocks('SOP Match', ['No matching SOP found.']);
-    }
-  }
-
-  if (lowerQuery.includes('trades')) {
-    const rows = await fetchSheet('Trades', 'A2:D');
-    const items = rows.map(([company, division, , contact]) =>
-      `*${company}* — ${division}\nContact: ${contact}`
-    );
-    return formatBlocks('Trades', items.slice(0, 10));
-  }
-
-  if (lowerQuery.includes('completed jobs')) {
-    const rows = await fetchSheet('Completed Jobs', 'A2:H');
-    const items = rows.map(([job, title, , , , phase, start, end]) =>
-      `*${job}* — ${title} (${phase})\nStart: ${start}, End: ${end}`
-    );
-    return formatBlocks('Completed Jobs', items.slice(0, 10));
-  }
-
-  if (lowerQuery.includes('jobs list')) {
-    const rows = await fetchSheet('Jobs List', 'A2:H');
-    const items = rows.map(([job, title, , , , phase, start, end]) =>
-      `*${job}* — ${title} (${phase})\nStart: ${start}, End: ${end}`
-    );
-    return formatBlocks('Jobs List', items.slice(0, 10));
-  }
-
-  if (lowerQuery.includes('purchase orders') || lowerQuery.includes('po')) {
-    const rows = await fetchSheet('Purchase Orders', 'B2:F');
-    const items = rows.map(([po, job, approver, price, link]) =>
-      `*${po}* — ${job}\nApproved by: ${approver}, Price: ${price}\n<${link}|View PO>`
-    );
-    return formatBlocks('Purchase Orders', items.slice(0, 10));
-  }
-
-  if (lowerQuery.includes('change orders')) {
-    const rows = await fetchSheet('Change Orders', 'B2:F');
-    const items = rows.map(([job, title, price, status, approval]) =>
-      `*${job}* — ${title}\nPrice: ${price}, Status: ${status}, Approval: ${approval}`
-    );
-    return formatBlocks('Change Orders', items.slice(0, 10));
-  }
-
-  return formatBlocks('Help', [
-    'Try queries like `sop`, `trades`, `completed jobs`, `jobs list`, `purchase orders`, or `change orders`.',
-  ]);
+  if (filtered.length === 0) return 'No approved purchase orders this week.';
+  return filtered.map(row => `• PO#${row[0]} - ${row[1]} - \$${row[2]}`).join('\n');
 }
 
+// Slack event listener
 app.post('/slack/events', async (req, res) => {
-  const query = req.body.text || '';
-  const blocks = await handleQuery(query);
+  const { text, user_id, channel_id } = req.body.event;
 
-  res.json({
-    response_type: 'in_channel',
-    blocks,
+  const queryType = matchQuery(text);
+  const response = await fetchSheetData(queryType);
+
+  await slackClient.chat.postMessage({
+    channel: channel_id,
+    text: response
   });
+
+  res.status(200).send();
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`SOP bot server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
