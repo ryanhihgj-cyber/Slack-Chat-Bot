@@ -1,56 +1,93 @@
 const express = require('express');
-const bodyParser = require('body-parser');
-const { matchSOP } = require('./sopMap');
-const { sendSlackMessage } = require('./slack');
-const { getSOPData } = require('./sheets');
-const fs = require('fs');
-require('dotenv').config();
+const axios = require('axios');
+const { google } = require('googleapis');
+const stringSimilarity = require('string-similarity');
 
 const app = express();
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(bodyParser.json());
+app.use(express.json());
 
-// Log queries to a file
-function logQuery(query, matchedSOP) {
-    const logEntry = {
-        timestamp: new Date().toISOString(),
-        query,
-        matchedSOP
+// Environment variables
+const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
+const GOOGLE_CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
+const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
+
+// Google Sheets setup
+const auth = new google.auth.GoogleAuth({
+  credentials: {
+    client_email: GOOGLE_CLIENT_EMAIL,
+    private_key: GOOGLE_PRIVATE_KEY,
+  },
+  scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+});
+
+const spreadsheetId = '1xqBWQlN6Y9vJ4gtAf2R0qGw6iwV3ZLjFK7UXWDCVpLY';
+const range = 'SOPs!A2:C';
+
+async function fetchSOPs() {
+  const client = await auth.getClient();
+  const sheets = google.sheets({ version: 'v4', auth: client });
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range,
+  });
+
+  const rows = res.data.values;
+  const sopDefinitions = {};
+
+  rows.forEach(([title, summary, keywords]) => {
+    sopDefinitions[title] = {
+      summary,
+      keywords: keywords.split(',').map(k => k.trim().toLowerCase()),
     };
-    fs.appendFileSync('slack-bot/logs/query_log.json', JSON.stringify(logEntry) + '\n');
+  });
+
+  return sopDefinitions;
 }
 
-// Slack Events endpoint
+function matchSOP(query, sopDefinitions) {
+  const normalizedQuery = query.toLowerCase();
+  let bestMatch = null;
+  let highestScore = 0;
+
+  for (const [title, data] of Object.entries(sopDefinitions)) {
+    const match = stringSimilarity.findBestMatch(normalizedQuery, data.keywords);
+    if (match.bestMatch.rating > highestScore) {
+      highestScore = match.bestMatch.rating;
+      bestMatch = { title, summary: data.summary };
+    }
+  }
+
+  return highestScore > 0.5 ? bestMatch : null;
+}
+
+async function sendToSlack(text) {
+  if (!SLACK_WEBHOOK_URL) return;
+  await axios.post(SLACK_WEBHOOK_URL, { text });
+}
+
 app.post('/slack/events', async (req, res) => {
-    // Slack URL verification
-    if (req.body.type === 'url_verification') {
-        return res.status(200).send({ challenge: req.body.challenge });
-    }
+  const query = req.body.text;
 
-    // Handle slash command query
-    const query = req.body.text || '';
-    const matchedSOP = matchSOP(query);
+  // Step 1: Respond immediately with loading emoji
+  await sendToSlack(':hourglass_flowing_sand: Thinking about your SOP query...');
+  res.status(200).send(); // Acknowledge Slack
 
-    if (matchedSOP) {
-        try {
-            const data = await getSOPData(matchedSOP);
-            const preview = data ? data.slice(0, 3).map(row => row.join(' | ')).join('\n') : 'No data found.';
-            const responseText = `Matched SOP: *${matchedSOP}*\nSample Data:\n${preview}`;
-            await sendSlackMessage(req.body.channel_id, responseText);
-        } catch (error) {
-            await sendSlackMessage(req.body.channel_id, `Matched SOP: *${matchedSOP}*\nError fetching data.`);
-        }
-    } else {
-        await sendSlackMessage(req.body.channel_id, "Sorry, I couldn't find a matching SOP.");
-    }
+  // Step 2: Random delay between 1.5 and 2.5 seconds
+  const delay = Math.floor(Math.random() * 1000) + 1500;
 
-    logQuery(query, matchedSOP);
-    res.status(200).send();
+  setTimeout(async () => {
+    const sopDefinitions = await fetchSOPs();
+    const result = matchSOP(query, sopDefinitions);
+
+    const responseText = result
+      ? `✅ *${result.title}*\n${result.summary}`
+      : `❌ No matching SOP found. Try rephrasing your query.`;
+
+    await sendToSlack(responseText);
+  }, delay);
 });
 
-// Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Slack bot server running on port ${PORT}`);
+app.listen(3000, () => {
+  console.log('SOP bot server running on port 3000');
 });
-
