@@ -1,6 +1,6 @@
 const express = require('express');
 const bodyParser = require('body-parser');
-const sopMap = require('./sopMap');
+const { matchSOP } = require('./sopMap');
 const { sendSlackMessage } = require('./slack');
 const fs = require('fs');
 require('dotenv').config();
