@@ -13,7 +13,7 @@
     "@slack/web-api": "^6.9.1",
     "googleapis": "^123.0.0",
     "google-auth-library": "^9.0.0",
-    "difflib": "^0.2.4"
+    "string-similarity": "^4.0.4"
   },
   "engines": {
     "node": ">=14.0.0"
