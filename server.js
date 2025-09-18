@@ -83,16 +83,32 @@ async function fetchSheetData(type) {
 
 // 🚀 Slack event listener
 app.post('/slack/events', async (req, res) => {
-  const { text, channel } = req.body.event;
+  const body = req.body;
 
-  const intent = await getIntent(text);
-  const response = await fetchSheetData(intent);
+  // Handle Slack URL verification challenge
+  if (body.type === 'url_verification') {
+    return res.status(200).send(body.challenge);
+  }
 
-  await slackClient.chat.postMessage({
-    channel,
-    text: `Here’s what I found for *${text}*:\n\n${response}`
-  });
+  // Handle Slack event callbacks
+  if (body.type === 'event_callback') {
+    const event = body.event;
 
+    // Only respond to message events with text
+    if (event && event.type === 'message' && event.text && !event.bot_id) {
+      const intent = await getIntent(event.text);
+      const response = await fetchSheetData(intent);
+
+      await slackClient.chat.postMessage({
+        channel: event.channel,
+        text: `Here’s what I found for *${event.text}*:\n\n${response}`
+      });
+
+      return res.status(200).send();
+    }
+  }
+
+  // If nothing matched, just acknowledge
   res.status(200).send();
 });
 
