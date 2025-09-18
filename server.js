@@ -10,9 +10,10 @@ const {
   updateCell,
   findRowsByDate,
   findRowsByKeyword
-} = require('./sheets');
+} = require('./sheets'); // Make sure this matches your file name
 
 const app = express();
+app.use(bodyParser.urlencoded({ extended: true })); // Required for slash commands
 app.use(bodyParser.json());
 
 const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
@@ -124,33 +125,23 @@ async function fetchSheetData(type) {
   }
 }
 
-// 🚀 Slack event listener
+// 🚀 Slash command handler
 app.post('/slack/events', async (req, res) => {
-  console.log('Incoming Slack event:', JSON.stringify(req.body, null, 2));
+  console.log('Slash command payload:', req.body);
 
-  const body = req.body;
+  const { text, user_id, channel_id } = req.body;
 
-  if (body.type === 'url_verification') {
-    return res.status(200).send(body.challenge);
+  if (!text) {
+    return res.status(200).send("🤖 I didn't catch that. Try asking about jobs, assignments, or purchase orders.");
   }
 
-  if (body.type === 'event_callback') {
-    const event = body.event;
+  const intent = await getIntent(text);
+  const response = await fetchSheetData(intent);
 
-    if (event && event.type === 'message' && event.text && !event.bot_id) {
-      const intent = await getIntent(event.text);
-      const response = await fetchSheetData(intent);
-
-      await slackClient.chat.postMessage({
-        channel: event.channel,
-        text: `Here’s what I found for *${event.text}*:\n\n${response}`
-      });
-
-      return res.status(200).send();
-    }
-  }
-
-  res.status(200).send();
+  res.status(200).send({
+    response_type: 'in_channel',
+    text: `Hey <@${user_id}>, here’s what I found for *${text}*:\n\n${response}`
+  });
 });
 
 // 🔍 Test endpoint
