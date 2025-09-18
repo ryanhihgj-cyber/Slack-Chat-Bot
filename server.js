@@ -83,18 +83,17 @@ async function fetchSheetData(type) {
 
 // 🚀 Slack event listener
 app.post('/slack/events', async (req, res) => {
+  console.log('Incoming Slack event:', JSON.stringify(req.body, null, 2));
+
   const body = req.body;
 
-  // Handle Slack URL verification challenge
   if (body.type === 'url_verification') {
     return res.status(200).send(body.challenge);
   }
 
-  // Handle Slack event callbacks
   if (body.type === 'event_callback') {
     const event = body.event;
 
-    // Only respond to message events with text
     if (event && event.type === 'message' && event.text && !event.bot_id) {
       const intent = await getIntent(event.text);
       const response = await fetchSheetData(intent);
@@ -108,7 +107,6 @@ app.post('/slack/events', async (req, res) => {
     }
   }
 
-  // If nothing matched, just acknowledge
   res.status(200).send();
 });
 
