@@ -20,7 +20,7 @@ const auth = new google.auth.GoogleAuth({
 const spreadsheetId = process.env.GOOGLE_SHEET_ID;
 
 async function fetchSheet(sheetName, range) {
-  const auth.getClient();
+  const client = await auth.getClient();
   const sheets = google.sheets({ version: 'v4', auth: client });
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
