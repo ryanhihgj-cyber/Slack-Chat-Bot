@@ -1,16 +1,22 @@
+require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
-const { google } = require('googleapis');
 const { WebClient } = require('@slack/web-api');
 const fuzz = require('fuzzball');
 const axios = require('axios');
+const {
+  getSheetData,
+  appendRow,
+  updateCell,
+  findRowsByDate,
+  findRowsByKeyword
+} = require('./sheetsService');
 
 const app = express();
 app.use(bodyParser.json());
 
 const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
-const sheets = google.sheets({ version: 'v4', auth: process.env.GOOGLE_API_KEY });
-const spreadsheetId = 'YOUR_SPREADSHEET_ID';
+const spreadsheetId = process.env.SPREADSHEET_ID;
 
 // 🔍 Use AI to interpret the query
 async function interpretQuery(text) {
@@ -65,10 +71,47 @@ async function getIntent(text) {
   return fuzzyMatch(text);
 }
 
-// 📊 Data fetchers (same as before)
-async function getJobsByDate(day) { /* same as before */ }
-async function getAssignments(scope) { /* same as before */ }
-async function getPurchaseOrders() { /* same as before */ }
+// 📊 Data fetchers
+async function getJobsByDate(day) {
+  const range = 'Jobs List!A2:G';
+  const today = new Date();
+  const targetDate = new Date(today);
+  if (day === 'tomorrow') targetDate.setDate(today.getDate() + 1);
+
+  const rows = await findRowsByDate(spreadsheetId, range, 5, targetDate); // Column F = index 5
+
+  if (rows.length === 0) return `No jobs found for ${day}.`;
+  return rows.map(row => `• ${row[0]} - ${row[1]} (${row[5]})`).join('\n');
+}
+
+async function getAssignments(scope) {
+  const range = 'Trades!A2:E';
+  const rows = await getSheetData(spreadsheetId, range);
+
+  if (scope === 'job') {
+    return rows.map(row => `• ${row[0]}: ${row[1]} assigned to ${row[2]}`).join('\n');
+  } else {
+    return rows.map(row => `• ${row[0]}: ${row[1]} this week`).join('\n');
+  }
+}
+
+async function getPurchaseOrders() {
+  const range = 'Purchase Orders!A2:E';
+  const rows = await getSheetData(spreadsheetId, range);
+
+  const today = new Date();
+  const startOfWeek = new Date(today.setDate(today.getDate() - today.getDay()));
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 6);
+
+  const filtered = rows.filter(row => {
+    const date = new Date(row[3]); // Assuming column D is approval date
+    return date >= startOfWeek && date <= endOfWeek;
+  });
+
+  if (filtered.length === 0) return 'No approved purchase orders this week.';
+  return filtered.map(row => `• PO#${row[0]} - ${row[1]} - \$${row[2]}`).join('\n');
+}
 
 async function fetchSheetData(type) {
   switch (type) {
@@ -108,6 +151,11 @@ app.post('/slack/events', async (req, res) => {
   }
 
   res.status(200).send();
+});
+
+// 🔍 Test endpoint
+app.get('/test', (req, res) => {
+  res.send('Slack bot is live!');
 });
 
 const PORT = process.env.PORT || 3000;
