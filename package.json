@@ -16,7 +16,7 @@
     "string-similarity": "^4.0.4"
   },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=20.x"
   },
   "author": "",
   "license": "MIT"
