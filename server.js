@@ -11,7 +11,7 @@ const slackToken = process.env.SLACK_BOT_TOKEN;
 const slackClient = new WebClient(slackToken);
 
 const sheets = google.sheets({ version: 'v4', auth: process.env.GOOGLE_API_KEY });
-const spreadsheetId = 'YOUR_SPREADSHEET_ID'; // Replace with your actual ID
+const spreadsheetId = '1xqBWQlN6Y9vJ4gtAf2R0qGw6iwV3ZLjFK7UXWDCVpLY'; // Replace with your actual ID
 
 // Define query types and keywords
 const queryMap = {
